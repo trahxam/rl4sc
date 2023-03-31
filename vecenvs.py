@@ -359,7 +359,7 @@ class VectorisedSupplyChain(VecEnv):
                     base_x = (self.node_pos_x[sender] - self.node_pos_x[reciever]) * frac + self.node_pos_x[reciever]
                     base_y = (self.node_pos_y[sender] - self.node_pos_y[reciever]) * frac + self.node_pos_y[reciever]
                     edge_plots[k].set_data([base_x, base_x], 
-                                           [base_y, base_y + self.edge_inv_history[time,edge,lead_time] * node_inv_scale_factor])
+                                           [base_y, base_y + self.edge_inv_history[time,edge,lead_time] * node_inv_scale_factor / np.max(self.node_inv_capacity)])
                     k += 1
 
             time_text.set_text(f'Timestep {time}/{time_end}')
