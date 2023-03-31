@@ -100,7 +100,7 @@ class VectorisedSupplyChain(VecEnv):
 
         tstart = time.time()
         self.node_profits = np.zeros(shape=(self.num_envs, self.num_nodes))
-        actions = actions * 1000
+        actions = actions * 10000
 
         for edge in range(self.num_edges):
             # Get the nodes that are going to do the order
@@ -198,7 +198,9 @@ class VectorisedSupplyChain(VecEnv):
         info = {}
 
         if self.time % self.update_interval == 0:
-            print(f'{self.time + self.update_interval}: {np.mean(reward):.2f} +/- {np.std(reward):.2f}')
+            mean_tot_reward = np.sum(self.batch_node_profit_history) / (self.num_envs * self.time)
+            mean_tot_reward = np.mean(reward)
+            print(f'{self.time + self.update_interval}: {mean_tot_reward:.2f}')
 
         tend = time.time()
 
@@ -304,7 +306,7 @@ class VectorisedSupplyChain(VecEnv):
         ax.axis('off')
         fig.show()
 
-    def animate_history(self, time_start, time_end, save_path, node_inv_scale_factor=0.1):
+    def animate_history(self, time_start, time_end, save_path, node_inv_scale_factor=100):
         fig, ax = plt.subplots()
         fig.set_size_inches(8, 4)
 
@@ -319,7 +321,7 @@ class VectorisedSupplyChain(VecEnv):
             marker = self.get_node_marker(node)
             ax.scatter(self.node_pos_x[k], self.node_pos_y[k], ec='black', fc='white', s=400, zorder=10, marker=marker)
             ax.text(self.node_pos_x[k], self.node_pos_y[k], node, zorder=20, verticalalignment='center', horizontalalignment='center')
-            bar_height = self.node_inv_capacity[k] * node_inv_scale_factor 
+            bar_height = self.node_inv_capacity[k] * node_inv_scale_factor / np.max(self.node_inv_capacity)
             ax.plot([self.node_pos_x[k], self.node_pos_x[k]], 
                     [self.node_pos_y[k], self.node_pos_y[k] + bar_height], color='lightgray', linewidth=10.0)
 
@@ -341,7 +343,7 @@ class VectorisedSupplyChain(VecEnv):
             time = time + time_start
 
             for k in range(self.num_nodes):
-                bar_height = self.node_inv_history[time,k] * node_inv_scale_factor 
+                bar_height = self.node_inv_history[time,k] * node_inv_scale_factor / np.max(self.node_inv_capacity)
                 
                 node_plots[k].set_data([self.node_pos_x[k], self.node_pos_x[k]], 
                                        [self.node_pos_y[k], self.node_pos_y[k] + bar_height])
