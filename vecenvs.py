@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 
 class VectorisedSupplyChain(VecEnv):
     def __init__(self, node_df, edge_df, supplies, demands, max_time, num_envs,
-                 update_interval=100):
+                 update_interval=1000, update_window_size=1000, demand_window_size=100):
         self.node_df = node_df
         self.edge_df = edge_df
         self.demands = demands
@@ -21,6 +21,7 @@ class VectorisedSupplyChain(VecEnv):
         self.max_time = max_time
         self.num_envs = num_envs
         self.update_interval = update_interval
+        self.update_window_size = update_window_size
 
         self.demand_nodes, self.demand_amounts, self.demand_prices = demands
         self.supply_nodes, self.supply_amounts, self.supply_prices = supplies
@@ -48,14 +49,16 @@ class VectorisedSupplyChain(VecEnv):
         self.num_edges = self.edge_df.shape[0]
 
         self.edge_inv_window_size = np.max(self.edge_trans_time) + 1
-        self.demand_window_size = 64
+        self.demand_window_size = demand_window_size
+        self.demand_window_censor_last = 0
+        self.demand_window_censor_value = 0
 
         self.action_space_shape = (self.num_edges,)
         self.observation_space_shape = (self.num_nodes + 
                                         self.num_edges * self.edge_inv_window_size + 
                                         len(self.demand_nodes) * self.demand_window_size,)
         
-        self.action_space = Box(low=0.0, high=1024, shape=self.action_space_shape, dtype=np.float32)
+        self.action_space = Box(low=0.0, high=1.0, shape=self.action_space_shape, dtype=np.float32)
         self.observation_space = Box(low=0.0, high=np.inf, shape=self.observation_space_shape, dtype=np.float32)
         self.demand_vector = np.hstack([self.demand_amounts, np.zeros(shape=(len(self.demand_nodes), 
                                                                              self.demand_window_size))])
@@ -75,9 +78,19 @@ class VectorisedSupplyChain(VecEnv):
 
         batch_node_state = self.node_inv
         batch_edge_state = self.edge_inv.reshape(self.num_envs, -1)
-        single_demand_state = self.demand_vector[:,self.time:self.time+self.demand_window_size].flatten()
+        single_demand_state = self.demand_vector[:,self.time:self.time+self.demand_window_size]
+        
+        if self.demand_window_censor_value == 'last_uncensored':
+            censor_value = single_demand_state[:,self.time+self.demand_window_size-self.demand_window_censor_last].copy()
+        else:
+            censor_value = self.demand_window_censor_value
+        
+        single_demand_state[:, self.time+self.demand_window_size-self.demand_window_censor_last:self.time+self.demand_window_size] = censor_value
+        single_demand_state = single_demand_state.flatten()
+
         batch_demand_state = np.repeat(np.expand_dims(single_demand_state, 0), self.num_envs, 0)
         batch_state_vector = np.concatenate([batch_node_state, batch_edge_state, batch_demand_state], axis=1)
+        
         return batch_state_vector
     
     def reset(self):
@@ -100,7 +113,7 @@ class VectorisedSupplyChain(VecEnv):
 
         tstart = time.time()
         self.node_profits = np.zeros(shape=(self.num_envs, self.num_nodes))
-        actions = actions * 10000
+        actions = actions * np.max(self.node_inv_capacity)
 
         for edge in range(self.num_edges):
             # Get the nodes that are going to do the order
@@ -197,11 +210,6 @@ class VectorisedSupplyChain(VecEnv):
 
         info = {}
 
-        if self.time % self.update_interval == 0:
-            mean_tot_reward = np.sum(self.batch_node_profit_history) / (self.num_envs * self.time)
-            mean_tot_reward = np.mean(reward)
-            print(f'{self.time + self.update_interval}: {mean_tot_reward:.2f}')
-
         tend = time.time()
 
         self.batch_node_profit_history[:,self.time,:] = self.node_profits
@@ -210,6 +218,22 @@ class VectorisedSupplyChain(VecEnv):
         self.node_inv_history[self.time,:] = self.node_inv[0].copy()
         self.edge_inv_history[self.time,:,:] = self.edge_inv[0].copy()
         self.walltime_history[self.time] = tend - tstart
+
+        if (self.time + 1) % self.update_interval == 0:
+            # Total profit is sum over all the nodes (the last dimension)
+
+            mean_reward = np.sum(self.batch_node_profit_history, axis=-1)
+
+            # Now average this over the batch (the first dimension)
+
+            mean_reward = np.mean(mean_reward, axis=0)
+
+            # Now average this over the specified last number of time steps
+ 
+            #mean_reward = np.mean(mean_reward[max(self.time-self.update_window_size, 0):self.time])
+            mean_reward = np.sum(mean_reward) / self.time
+
+            print(f'{self.time + 1}: {mean_reward:.2f}')
 
         self.time += 1
 
@@ -240,19 +264,23 @@ class VectorisedSupplyChain(VecEnv):
         return super().step_wait()
         
     def plot_history(self, linewidth=0.4, alpha=0.6):
-        fig, ax = plt.subplots(nrows=6, ncols=1)
+        fig, ax = plt.subplots(nrows=7, ncols=1)
         fig.set_size_inches(8, 8)
         args = {'linewidth': linewidth, 'alpha': alpha}
 
+        def smooth(x, window_size=100):
+            return np.convolve(x, np.ones(window_size)/window_size, mode='valid')
+
         for edge in range(self.num_edges):
             sender, reciever = self.edge_sender[edge], self.edge_reciever[edge]
-            ax[0].plot(self.action_history[:,edge], **args, label=f'Edge {sender}-{reciever}')
-            ax[1].plot(self.edge_inv_history[:,edge,0], **args, label=f'Edge {sender}-{reciever}')
+            ax[0].plot(smooth(self.action_history[:,edge]), **args, label=f'Edge {sender}-{reciever}')
+            ax[1].plot(smooth(self.edge_inv_history[:,edge,0]), **args, label=f'Edge {sender}-{reciever}')
 
         for node in range(self.num_nodes):
-            ax[2].plot(self.node_inv_history[:,node], label=f'Node {node}', **args)
-            ax[3].plot(self.node_profit_history[:,node], label=f'Node {node}', **args)
-            ax[4].plot(np.cumsum(self.node_profit_history[:,node]), label=f'Node {node}', **args)
+            if node not in self.supply_nodes:
+                ax[2].plot(self.node_inv_history[:,node], label=f'Node {node}', **args)
+                ax[3].plot(self.node_profit_history[:,node], label=f'Node {node}', **args)
+                ax[4].plot(np.cumsum(self.node_profit_history[:,node]), label=f'Node {node}', **args)
             #windowed_mean = np.convolve(self.node_profit_history[:,node], np.ones(self.demand_window_size)/self.demand_window_size, mode='valid')
             #ax[4].plot(windowed_mean, label=f'Node {node}', **args)
 
@@ -260,20 +288,24 @@ class VectorisedSupplyChain(VecEnv):
             node = self.demand_nodes[k]
             ax[5].plot(self.demand_amounts[k], label=f'Demand {node}', **args)
 
-        for k in range(len(self.demand_nodes)):
+        for k in range(len(self.supply_nodes)):
             node = self.supply_nodes[k]
-            ax[5].plot(self.supply_amounts[k], label=f'Supply {node}', **args)
+            ax[6].plot(self.supply_amounts[k], label=f'Supply {node}', **args)
 
-        axes_labels = ['Actions', 'Edge Stock', 'Node Stock', 'Node Profit', 'Node Cumulative Profit', 'Demand']
+        axes_labels = ['Actions', 'Edge Stock', 'Node Stock', 'Node Profit', 'Total Node \n Profit', 'Demand', 'Supply']
 
-        for i in range(6):
-            
+        for i in range(len(axes_labels)):  
             ax[i].set_ylabel(axes_labels[i])
 
-            if i == 5:
+            if i == len(axes_labels) - 1:
                 ax[i].set_xlabel('Time')
             else:
                 ax[i].set_xticks([])
+
+        ax[0].legend(fontsize=4, ncols=12)
+        ax[4].legend(fontsize=4, ncols=4)
+        ax[5].legend(fontsize=4, ncols=4)
+        ax[6].legend(fontsize=4, ncols=4)
     
         fig.show()
 
@@ -294,12 +326,34 @@ class VectorisedSupplyChain(VecEnv):
             reciever = self.edge_reciever[edge]
             ax.plot([self.node_pos_x[sender], self.node_pos_x[reciever]], 
                     [self.node_pos_y[sender], self.node_pos_y[reciever]], color='black', linestyle='--', zorder=0)
+            base_x = (self.node_pos_x[sender] - self.node_pos_x[reciever]) * 0.7 + self.node_pos_x[reciever]
+            base_y = (self.node_pos_y[sender] - self.node_pos_y[reciever]) * 0.7 + self.node_pos_y[reciever]
+
+            ax.text(base_x, base_y, f'{self.edge_cost[edge]} cost \n {self.edge_trans_time[edge]} days',
+                    verticalalignment='center', horizontalalignment='center', fontsize=6, zorder=10,
+                    bbox=dict(facecolor='white', edgecolor='none'))
             
         for k in range(self.num_nodes):
             node = self.nodes[k]
             marker = self.get_node_marker(node)
             ax.scatter(self.node_pos_x[k], self.node_pos_y[k], ec='black', fc='white', s=400, zorder=10, marker=marker)
             ax.text(self.node_pos_x[k], self.node_pos_y[k], node, zorder=20, verticalalignment='center', horizontalalignment='center')
+
+            ax.text(self.node_pos_x[k], self.node_pos_y[k] - 35, 
+                    f'{self.node_hold_cost[k]} hold cost', 
+                    zorder=20, verticalalignment='center', horizontalalignment='center', fontsize=6)
+
+        for k in range(len(self.supply_nodes)):
+            node = self.supply_nodes[k]
+            ax.text(self.node_pos_x[node], self.node_pos_y[node] + 35, 
+                    f'{np.mean(self.supply_amounts[k]):.0f} supply/day \n {np.mean(self.supply_prices[k]):.1f} cost', 
+                    zorder=20, verticalalignment='center', horizontalalignment='center', fontsize=6)
+        
+        for k in range(len(self.demand_nodes)):
+            node = self.demand_nodes[k]
+            ax.text(self.node_pos_x[node], self.node_pos_y[node] + 35, 
+                    f'{np.mean(self.demand_amounts[k]):.0f} demand/day \n {np.mean(self.demand_prices[k]):.1f} sell price', 
+                    zorder=20, verticalalignment='center', horizontalalignment='center', fontsize=6)
 
         ax.set_xticks([])
         ax.set_yticks([])
