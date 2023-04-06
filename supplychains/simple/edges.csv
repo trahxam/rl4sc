@@ -1,4 +1,4 @@
 edge_sender,edge_reciever,edge_trans_time,edge_cost,edge_hold_cost,edge_prod_yield
-0,1,5,-1.0,0.01,1.0
-1,2,6,-1.0,0.01,1.0
-2,3,9,-1.0,0.01,1.0
+0,1,5,-0.1,0.01,1.0
+1,2,6,-0.1,0.01,1.0
+2,3,9,-0.1,0.01,1.0
